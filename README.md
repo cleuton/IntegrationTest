@@ -71,7 +71,7 @@ docker run --name some-mysql -d  -p 3306:3306 -e MYSQL_ROOT_PASSWORD=my-secret-p
 
 Anote a senha que utilizar para poder configurar o servidor na classe: [**DatabaseWrapper**](./src/main/java/com/pythondrops/testing/DatabaseWrapper.java).
 
-Execute o arquivo [**database.sql**](./src/main/java/com/pythondrops/testing/database.sql). Se estiver executando em contêiner, lembre-se de fazer **docker cp** para enviar o arquivo a ele: 
+Execute o arquivo [**database.sql**](src/main/resources/database.sql). Se estiver executando em contêiner, lembre-se de fazer **docker cp** para enviar o arquivo a ele: 
 
 ```shell
 docker cp ./src/main/java/com/pythondrops/testing/database.sql some-mysql:/

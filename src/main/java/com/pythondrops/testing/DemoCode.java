@@ -1,13 +1,7 @@
 package com.pythondrops.testing;
 
-import java.sql.Connection;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.UUID;
-
-import javax.sql.DataSource;
-
-import com.mysql.cj.jdbc.MysqlDataSource;
 
 public class DemoCode {
 
@@ -38,6 +32,8 @@ public class DemoCode {
     public UUID postMessageToChannel(UUID userId, UUID channelId, String title, String content)
                 throws SQLException, UserNotAllowedException, ChannelNotAvailableException {
 
+        checkArgs(userId, channelId, title, content);
+
         User user = databaseWrapper.getUser(userId);
 
         if (user == null) {
@@ -55,4 +51,16 @@ public class DemoCode {
         return databaseWrapper.postMessage(message);
     }
 
+    private void checkArgs(Object... args) {
+        for(Object arg : args) {
+            if (arg instanceof String) {
+                String argString = (String) arg;
+                if (argString == null || argString.isEmpty()) {
+                    throw new IllegalArgumentException("Missing argument(s)");
+                }
+            } else if (arg == null) {
+                throw new IllegalArgumentException("Missing argument(s)");
+            }
+        }
+    }
 }

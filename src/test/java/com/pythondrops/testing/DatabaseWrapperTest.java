@@ -50,7 +50,7 @@ class DatabaseWrapperTest {
 
         DatabaseWrapper dbWrapper = new DatabaseWrapper(dataSource);
         DatabaseWrapper spyDbWrapper = spy(dbWrapper);
-        After1 dc = new After1(spyDbWrapper);
+        DemoCode dc = new DemoCode(spyDbWrapper);
 
         // When:
 
