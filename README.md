@@ -4,6 +4,8 @@
 
 Testes de integração devem validar o **backend** do software, verificando se as interfaces e integrações entre os componetes estão funcionando de acordo com a especificação. 
 
+Tem tutorial [**em vídeo**](https://youtu.be/lBrSKIXotX8?si=xe6CEvmIKtI08pbH). Se inscreva [**no meu canal**](https://www.youtube.com/@CleutonSampaio) e ative as notificações! Confira [**meus cursos!**](https://www.udemy.com/user/cleutonsampaio/). 
+
 Há uma certa confusão entre testes **unitários** e de **integração**, mas os objetivos são diferentes:
 - **Teste unitário**: Validar a lógica de cada unidade (método, função) do software.
 - **Teste de integração**: Validar e integração entre as várias unidades e componentes internos e externos ao software.
