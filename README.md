@@ -1,337 +1,242 @@
-# Tutorial de Teste unitário
+# Tutorial de Teste de Integração
 
 **c) 2023 [Cleuton Sampaio](https://linkedin.com/in/cleutonsampaio)**
 
-Você sabe criar testes unitários efetivos? Existem técnicas para criar testes unitários. Veja o [PDF anexado](./testes_unitarios.pdf) ao projeto.
+Testes de integração devem validar o **backend** do software, verificando se as interfaces e integrações entre os componetes estão funcionando de acordo com a especificação. 
 
-## Um estudo de caso
+Há uma certa confusão entre testes **unitários** e de **integração**, mas os objetivos são diferentes:
+- **Teste unitário**: Validar a lógica de cada unidade (método, função) do software.
+- **Teste de integração**: Validar e integração entre as várias unidades e componentes internos e externos ao software.
 
-O projeto deste tutorial é parte de um projeto real em que eu estava trabalhando, devidamente desidentificado e modificado. O código é para ser utilizado como está, sem tentar refatorar ou implementar **cleancode**. O objetivo é criar testes unitários para cobrir os requisitos principais.
+Leia o [**arquivo PDF**](./testes-integracao.pdf) sobre testes de integração antes de prosseguir.
 
-Na vida real, você encontrará código muito parecido com esse do exemplo: Com **warnings**, **smells** e não muito otimizado, e tem que focar na sua prioridade, que será criar testes unitários efetivos. 
+## O que deve ser testado ##
 
+Um **caso de uso** completo, do ponto de vista do **backend**. Neste projeto, testaremos o caso de uso de postar uma mensagem: 
 
+![](./caso-de-uso.png)
 
-**ATENÇÃO:** *Não se preocupe com a qualidade do código. Preste atenção nas regras e nos testes que vamos criar, pois esse é o objetivo do tutorial*.
+Vou pular a parte de **login** para descomplicar as coisas, mas, a rigor, deveríamos testar a partir do login mesmo. Vamos precisar executar os componentes do software sem **mockar** nada, nem mesmo o banco de dados. 
+O problema é: 
 
-O código principal é composto por dois arquivos: [**DemoCode**](./src/main/java/com/pythondrops/testing/DemoCode.java) e [**DatabaseWrapper**](./src/main/java/com/pythondrops/testing/DatabaseWrapper.java). A unidade principal a ser testada é o método **postMessageToChannel**, da classe **DemoCode**. A classe **DatabaseWrapper** é apenas um utilitário para recuperar as classes de entidade utilizadas (**Channel**, **User**, **Message**).
+- *Como testar com banco de dados sem deixar efeitos colaterais?*
 
-Neste exemplo, eu removi o **ORM** e o **framework** utilizados, para deixar o mais simples possível. Mas, com as devidas adaptações, funcionaria em uma versão mais complexa. Na verdade, no projeto original eu utilizava ORM e framework. 
+Sim, a cada teste, podemos deixar o estado do sistema de um jeito inconsistente. A não ser que queiramos "encadear" testes, o que não é uma boa ideia. Para facilitar as coisas, utilizaremos dois componentes bem interessantes:
+- **Testcontainers**: Uma biblioteca simples e prática para utilizarmos **contêineres** **Docker** em nossos testes.
+- **FailSafe**: Um plugin do **maven** para executar testes de integração. 
 
-Vejamos o método que vamos testar: 
+## Dependências ##
+
+Para começar, vamos acrescentar as dependências no **pom.xml**:
+
+```xml
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>1.19.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>1.19.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mysql</artifactId>
+            <version>1.19.0</version>
+            <scope>test</scope>
+        </dependency>
+```
+
+São duas dependências para o **Testcontainers** e sua integração com o **Junit Jupiter** e uma para o módulo **mysql**.
+
+E temos que configurar os **plugins** na seção **build**: 
+
+```xml
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.1.2</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.1.2</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+```
+
+## Escrevendo um teste de integração ##
+
+O **Failsafe** é configurado para executar os testes que terminam em "*IT". Você pode até alterar a configuração para mudar a pasta onde eles ficam, mas, se quiser, pode deixar em **src/test/java** mesmo.
+
+Os testes de integração são executados em dois **goals** do ciclo de vida do **maven**: 
+- **integration-test**: Só executa os testes de integração.
+- **verify**: Executa todos os testes. 
+
+O que vamos testar? Bom, vamos postar uma mensagem! Para começar, examine o código de teste de integração [**BaseIT.java**](./src/test/java/com/pythondrops/testing/BaseIT.java). Começamos criando um **contêiner** para o **mysql**: 
 
 ```
-    public UUID postMessageToChannel(UUID userId, UUID channelId, String title, String content)
-                throws SQLException, UserNotAllowedException, ChannelNotAvailableException {
+    @BeforeEach
+    public void setUp() throws IOException, InterruptedException {
+        mysql = new MySQLContainer<>("mysql")
+          .withUsername("root")
+          .withPassword("my-secret-pw")
+          .withExposedPorts(3306)
+          .withCopyFileToContainer(MountableFile.forClasspathResource("database.sql"), "/docker-entrypoint-initdb.d/schema.sql");
 
-        User user = databaseWrapper.getUser(userId);
+        mysql.start();
 
-        if (user == null) {
-            throw new UserNotAllowedException("User does not exist or is suspended");
-        } else if (!user.channels.contains(channelId)) {
-            throw new ChannelNotAvailableException("User is not in the channel");
-        }
+        MysqlDataSource mds = new MysqlDataSource();
+        mds.setUser("root");
+        mds.setPassword("my-secret-pw");
+        mds.setServerName("localhost");
+        mds.setPort(mysql.getFirstMappedPort().intValue());
+        mds.setDatabaseName("TESTDB");
 
-        Message message = new Message();
-        message.channelId = channelId;
-        message.author = userId;
-        message.title = title;
-        message.content = content;
-
-        return databaseWrapper.postMessage(message);
+        dataSource = mds;
     }
 ```
 
-Este código é parte de uma aplicação de mensagens instantâneas. Existem os usuários (USER), os CANAIS (CHANNEL), e as MENSAGENS (MESSAGE). Um usuário pode postar uma mensagem em um canal, desde que esteja inscrito nele (USER_CHANNEL).
+Este código será executado antes de qualquer teste. Se você quiser reaproveitar, pode utilizar a anotação **@BeforeAll**, mas lembre-se que os efeitos colaterais de um teste poderão afetar outros testes.
 
-Esta é a nossa **unidade** principal para efeitos de teste. Seu objetivo é inserir um registro **MESSAGE** no banco de dados. Para isso, algumas condições precisam ser atendidas: 
+Estou criando uma instância **Docker** do **mysql** e iniciando o contêiner. Note que passei a opção **withCopyFileToContainer** que copiará o arquivo **SQL** de criação de esquema e inserção de dados, o que deixará o database pronto para uso. 
 
-1) As chaves do usuário (**USER_ID**) e do canal (**CHANNEL_ID**) precisam ser válidas.
-2) O título e o conteúdo da mensagem devem ser válidos.
-3) O usuário não pode estar suspenso (SUSPENDED=true).
-4) O canal não pode estar oculto (HIDDEN=true).
-5) O usuário não pode estar suspenso do canal (USER_CHANNEL.SUSPENDED=true).
-6) O usuário tem que estar inscrito no canal (registro em USER_CHANNEL com o USER_ID e o CHANNEL_ID).
-
-Como as chaves são UUIDs, elas precisam ser UUIDs válidos, não podendo ser nulas. O título e o conteúdo da mensagem não podem ser nulos ou ter tamanho zero.
-
-## Preparação do ambiente ##
-
-Suba uma instância de **MySQL** versão 8 ou superior. Se for local, inicie com: 
+Agora vem o código do teste: 
 
 ```
-mysql.server start
-```
-
-Se preferir criar um contêiner **Docker**: 
-
-```
-docker run --name some-mysql -d  -p 3306:3306 -e MYSQL_ROOT_PASSWORD=my-secret-pw  mysql
-```
-
-Anote a senha que utilizar para poder configurar o servidor na classe: [**DatabaseWrapper**](./src/main/java/com/pythondrops/testing/DatabaseWrapper.java).
-
-Execute o arquivo [**database.sql**](src/main/resources/database.sql). Se estiver executando em contêiner, lembre-se de fazer **docker cp** para enviar o arquivo a ele: 
-
-```shell
-docker cp ./src/main/java/com/pythondrops/testing/database.sql some-mysql:/
-
-mysql --user=root --password=my-secret-pw --database=mysql < ./database.sql
-```
-
-## Criando os testes unitários ##
-
-Como você pode ver na pasta de [**testes**](./src/test/java/com/pythondrops/testing) já temos os testes todos criados, mas vou acompanhar com você o processo aqui.
-
-### Versão inicial ###
-
-A versão inicial do código a ser testado está no arquivo [**DemoCode**](./src/main/java/com/pythondrops/testing/DemoCode.java), após descobrir alguns problemas, eu criei a segunda versão no arquivo [**After1**](./src/main/java/com/pythondrops/testing/After1.java).
-
-De acordo com aquele [tutorial em PDF](./testes_unitarios.pdf), precisamos inicialmente pensar nos testes de interface (pré condições): 
-- Todos os argumentos nulos.
-
-```java
     @Test
-    void postMessageToChannelCheckAllNullArguments() {
-        System.out.println("Testing all null arguments");
+    public void itPostMessageOK() throws SQLException, UserNotAllowedException, ChannelNotAvailableException, ParseException {
+        System.out.println("IT post a message with no errors");
 
         // Given:
 
-        DatabaseWrapper dbWrapper = mock(DatabaseWrapper.class);
+        DatabaseWrapper dbWrapper = new DatabaseWrapper(dataSource);
         DemoCode dc = new DemoCode(dbWrapper);
 
         // When:
-
-        Exception exception = assertThrows(IllegalArgumentException.class, () -> {
-            dc.postMessageToChannel(null, null, null, null);
-        });
-
-        // Then:
-
-        String expectedMessage = "Missing argument(s)";
-        String actualMessage = exception.getMessage();
-
-        assertTrue(actualMessage.contains(expectedMessage));
-    }
-```
-
-Estou utilizando o [**Mockito**](https://site.mockito.org/) sem anotações e sem usar [**Powermock**](https://powermock.github.io/) para tornar as coisas mais simples. Não há necessidade de anotações e nem de mais nada. 
-
-Costumo comentar os blocos de cada teste com: 
-- **Given**: Pré condições para o teste, massa de dados, mocks etc.
-- **When**: Invocação da função sob teste.
-- **Then**: Asserções sobre o teste. 
-
-Como podemos ver, estou testando como o método **postMessageToChannel** se comporta com todos os argumentos nulos. Vejamos o resultado: 
-
-```shell
-Testing all null arguments
-
-org.opentest4j.AssertionFailedError: Unexpected exception type thrown, 
-Expected :class java.lang.IllegalArgumentException
-Actual   :class com.pythondrops.testing.UserNotAllowedException
-<Click to see difference>
-
-
-	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
-	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:67)
-	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:35)
-	at org.junit.jupiter.api.Assertions.assertThrows(Assertions.java:3111)
-	at com.pythondrops.testing.DemoCodeTest.postMessageToChannelCheckAllNullArguments(DemoCodeTest.java:27)
-	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
-	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
-	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
-Caused by: com.pythondrops.testing.UserNotAllowedException: User does not exist or is suspended
-	at com.pythondrops.testing.DemoCode.postMessageToChannel(DemoCode.java:44)
-	at com.pythondrops.testing.DemoCodeTest.lambda$postMessageToChannelCheckAllNullArguments$0(DemoCodeTest.java:28)
-	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:53)
-	... 6 more
-```
-Este e vários testes falharam. No teste, eu esperava a **IllegalArgumentException**, com a mensagem: "Missing argument(s)", mas recebi a minha exception de aplicação: "**com.pythondrops.testing.UserNotAllowedException**", o que é preocupante, pois ele não validou os argumentos e prosseguiu para a execução do método. 
-
-E tenho vários outros testes com erro: 
-
-- **postMessageToChannelCheckAllZeroLengthArguments**: Verifica todos os argumentos com strings vazios (""), ele só deu um erro de asserção, mas, aparentemente, foi em frente. 
-- **postMessageToChannelCheckContentdNullArgument**: Verifica se ele valida nulo no conteúdo (content) da mensagem. Também deu **UserNotAllowedException**, ou seja passou direto.
-- **postMessageToChannelCheckContentdZeroLengthArgument**: Verifica se ele valida string vazio no conteúdo (content) da mensagem. Idem: Passou direto.
-- **postMessageWithNonExistentUser**: Tenta postar uma mensagem com usuário inexistente. Este passou por que eu "mockei" o **DataBaseWrapper**: ```when(dbWrapper.getUser(any())).thenReturn(null);```.
-- **postMessageToChannelCheckChannelIdNullArgument**: Tenta postar uma mensagem com **channelId** nulo. Falhou por outros motivos, mas passou e foi acessar o database.
-- **postMessageToChannelCheckTitledNullArgument**: Valida se o título (title) da mensagem é nulo. Também passou e falhou por outros motivos. Foi até o database.
-- **postMessageToChannelCheckUserIdNullArgument**: Valida se o userId passado é nulo. Idem.
-
-Ficou claro que preciso validar melhor os argumentos. Este é o objetivo do teste de interface.
-
-### Segunda versão ###
-
-Eu criei uma segunda versão da classe **DemoCode** para você ver as diferenças. O arquivo agora é: [**After1.java**](./src/main/java/com/pythondrops/testing/After1.java). E criei uma segunda versão dos testes no arquivo: [**After1Test.java**](./src/test/java/com/pythondrops/testing/After1Test.java).
-
-Nesta segunda versão da função **postMessageToChannel** eu valido os argumentos invocando esta função que eu criei: ```checkArgs(userId, channelId, title, content);```. Agora, vejamos como os testes se comportam...
-
-![](./testes_ok.png)
-
-Como pode ver, todos os testes passaram sem problemas. 
-
-Fiz algumas mudanças em alguns testes: 
-
-- **postMessageToChannelCheckAllZeroLengthArguments**: Mudei a mensagem para "Invalid UUID string".
-- **postMessageWithUserNotInChannel**: Acrescentei esse teste.
-- **postMessageCheckResult**: Idem.
-
-### Teste de caminhos lógicos ###
-
-O método **postMessageToChannel** tem alguns caminhos básicos que eu preciso testar: 
-
-a) Usuário retornou **null** da função **DatabaseWrapper.getUser()**, o que significa que ele pode não existir ou pode estar suspenso. Isso já é testado pelo método **postMessageWithNonExistentUser**.
-b) Usuário não está inscrito no canal. Então criei o método abaixo: 
-
-```java
-    @Test
-    void postMessageWithUserNotInChannel() throws SQLException {
-        System.out.println("Testing user not in channel");
-
-        // Given:
-
-        DatabaseWrapper dbWrapper = mock(DatabaseWrapper.class);
-        After1 dc = new After1(dbWrapper);
-
-        User user = new User();
-        user.id = UUID.fromString("162b27bf-4c0b-11ee-a0e1-0242ac110002");
-        user.suspended = false;
-        user.piiContentLink = "blablabla";
-        user.channels = new HashSet<>();
-        user.channels.add(UUID.randomUUID());
-
-        when(dbWrapper.getUser(UUID.fromString("162b27bf-4c0b-11ee-a0e1-0242ac110002"))).thenReturn(user);
-
-        // When:
-
-        Exception exception = assertThrows(ChannelNotAvailableException.class, () -> {
-            dc.postMessageToChannel(UUID.fromString("162b27bf-4c0b-11ee-a0e1-0242ac110002"), UUID.fromString("347047f3-4bf4-11ee-a0e1-0242ac110002"), "TITLE", "Message content");
-        });
-
-        // Then:
-
-        String expectedMessage = "User is not in the channel";
-        String actualMessage = exception.getMessage();
-
-        assertTrue(actualMessage.contains(expectedMessage));
-    }
-```
-
-Neste teste, o canal desejado não aparece na coleção **channels** da classe **User**, o que indica que ele não está inscrito no canal, portanto, não pode postar nele. 
-
-### Teste tudo ok ###
-
-E se tudo estiver ok? Será que ele está fazendo o que deveria? Precisamos criar este teste? Sim, com certeza. É o método abaixo:
-
-```java
-    @Test
-    void postMessageCheckResult() throws SQLException, UserNotAllowedException, ChannelNotAvailableException {
-        System.out.println("Testing a complete post message");
-
-        // Given:
-
-        DataSource dataSource = mock(DataSource.class);
-        Connection connection = mock(Connection.class);
-        when(dataSource.getConnection()).thenReturn(connection);
-        PreparedStatement psUser = mock(PreparedStatement.class);
-        when(connection.prepareStatement("SELECT BIN_TO_UUID(U.ID) AS USER_ID, U.PII_CONTENT_LINK, U.SUSPENDED, BIN_TO_UUID(UC.CHANNEL_ID) AS CHANNEL_ID, UC.SUSPENDED as CHANNEL_SUSPENDED, C.HIDDEN FROM USER U INNER JOIN USER_CHANNEL UC ON U.ID = UC.USER_ID  INNER JOIN CHANNEL C ON UC.CHANNEL_ID = C.ID WHERE U.ID = ?"))
-          .thenReturn(psUser);
-
-        ResultSet rsUser = mock(ResultSet.class);
-        when(rsUser.getBoolean("SUSPENDED")).thenReturn(false);
-        when(rsUser.getString( "USER_ID" )).thenReturn("162b27bf-4c0b-11ee-a0e1-0242ac110002");
-        when(rsUser.getString( "pii_content_link" )).thenReturn("content-link");
-        when(rsUser.getString( "CHANNEL_ID" )).thenReturn("347047f3-4bf4-11ee-a0e1-0242ac110002");
-        when(rsUser.getBoolean( "CHANNEL_SUSPENDED" )).thenReturn(false);
-
-        PreparedStatement psInsert = mock(PreparedStatement.class);
-        when(connection.prepareStatement("INSERT INTO MESSAGE (AUTHOR, TITLE, CONTENT, CHANNEL_ID, CREATED_TIME) VALUES (?, ?, ?, ?, NOW());")).thenReturn(psInsert);
-        PreparedStatement psQueryMessage = mock(PreparedStatement.class);
-        when(connection.prepareStatement("SELECT BIN_TO_UUID(ID) AS MESSAGE_ID, MAX(CREATED_TIME) AS CREATED FROM MESSAGE WHERE AUTHOR=? GROUP BY ID;")).thenReturn(psQueryMessage);
-        ResultSet rsMessage = mock(ResultSet.class);
-        when(psQueryMessage.executeQuery()).thenReturn(rsMessage);
-        when(rsMessage.getString("MESSAGE_ID")).thenReturn("347047f3-4bf4-11ee-a0e1-0245ac110002");
-        when(rsMessage.next()).thenReturn(true);
-        AtomicInteger first = new AtomicInteger();
-        when(rsUser.next()).thenAnswer(x -> {
-                if (first.getAndIncrement() > 0) {
-                    return false;
-                }
-              return true;
-            });
-        when(psUser.executeQuery()).thenReturn(rsUser);
-
-        DatabaseWrapper dbWrapper = new DatabaseWrapper(dataSource);
-        DatabaseWrapper spyDbWrapper = spy(dbWrapper);
-        After1 dc = new After1(spyDbWrapper);
-
-        Message expectedMessage = new Message();
-        expectedMessage.channelId = UUID.fromString("347047f3-4bf4-11ee-a0e1-0242ac110002");
-        expectedMessage.title = "TITLE";
-        expectedMessage.content = "Message content";
-        expectedMessage.author = UUID.fromString("162b27bf-4c0b-11ee-a0e1-0242ac110002");
-
-        // When:
-
+        Date postDate = new Date();
         UUID messageId = dc.postMessageToChannel(UUID.fromString("162b27bf-4c0b-11ee-a0e1-0242ac110002"), UUID.fromString("347047f3-4bf4-11ee-a0e1-0242ac110002"), "TITLE", "Message content");
 
         // Then:
 
-        assertEquals(messageId, UUID.fromString("347047f3-4bf4-11ee-a0e1-0245ac110002"));
-        verify(spyDbWrapper).getUser(UUID.fromString("162b27bf-4c0b-11ee-a0e1-0242ac110002"));
-        verify(spyDbWrapper).postMessage(expectedMessage);
-    }
-```
-
-Neste método, eu tive que ir mais a fundo no teste: Tive que "mockar" o próprio database e criar um **spy** na classe **DatabaseWrapper**. Por que? Porque quero emular o database e verificar se o método **postMessageToChannel** invocou os métodos da maneira correta. Note que não estou testando a classe **DatabaseWrapper**, mas precisei "entrar" nela para forçar uma situação. 
-
-E eu verifico que os dois métodos de **DatabaseWrapper** foram invocados com os argumentos corretos. Neste segundo **verify** tive que fazer uma alteração na classe **Message** para passar: 
-
-```java
-    @Override
-    public boolean equals(Object obj) {
-        if (obj instanceof Message) {
-            Message m = (Message) obj;
-            if (m.id != null) {
-                return this.id.equals(m.id);
-            } else {
-                return
-                  this.title.equals(m.title) &&
-                    this.author.equals(m.author) &&
-                    this.content.equals(m.content) &&
-                    this.channelId.equals(m.channelId);
+        Connection db = this.dataSource.getConnection();
+        PreparedStatement query = db.prepareStatement("SELECT BIN_TO_UUID(ID) AS MESSAGE_ID, BIN_TO_UUID(AUTHOR) AS MESSAGE_AUTHOR, "
+          + "BIN_TO_UUID(CHANNEL_ID) AS CHANNEL_ID, TITLE, CONTENT, CREATED_TIME FROM MESSAGE;");
+        ResultSet rs = query.executeQuery();
+        int count = 0;
+        while (rs.next()) {
+            count++;
+            if (count > 1) {
+                fail("There should be only one message");
             }
-        } else {
-            return false;
+            String dbMessageId = rs.getString("MESSAGE_ID");
+            String dbAuthorId = rs.getString("MESSAGE_AUTHOR");
+            String dbChannelId = rs.getString("CHANNEL_ID");
+            String dbTitle = rs.getString("TITLE");
+            String dbContent = rs.getString("CONTENT");
+            String dbDate = rs.getString("CREATED_TIME");
+            System.out.println(dbDate);
+
+            SimpleDateFormat inputSDF = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+            inputSDF.setTimeZone(TimeZone.getTimeZone("UTC"));
+            Date myDate = inputSDF.parse(dbDate);
+            SimpleDateFormat outputSDF = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+            Date dbConvertedDate = outputSDF.parse(outputSDF.format(myDate));
+            System.out.println(dbConvertedDate);
+
+            long timeDiff = abs(postDate.getTime() - dbConvertedDate.getTime());
+
+            assertTrue(timeDiff < 5000);
+
+
         }
     }
 ```
 
-Por que? Porque estou verificando se o método **postMessage**, da classe **DatabaseWrapper**, foi invocado com o Objeto Message correto. Como o **id** é gerado pelo database (```id binary(16) default (uuid_to_bin(uuid())) not null primary key,```) eu precisei "forçar a barra" no método **equals**, caso contrário ele jamais reconheceria os objetos como iguais.
+É basicamente o teste do "caminho feliz" dos testes unitários, só que sem **mockar** coisa alguma. O mais importante é validar o estado do software após o teste, o que eu faço dentro do *loop*. Só pode haver um registro gravado na tabela **MESSAGE** e ele tem que ter o conteúdo específico que estou passando.
 
-### Testes que estão faltando ###
+Uma nota interessante que fará você ver a importância dos **testes de integração**: O teste do formato da data de postagem da mensagem. Eu criei essa coluna de propósito para demonstrar isso. Nos testes unitários nem nos preocupamos em testar, embora pudéssemos. Mas aqui, você tomará logo um "pescotapa" ao constatar as diferenças de **timezone** entre o **mysql** e o **java**.
+Quando declaramos uma coluna do tipo **TIMESTAMP** no **mysql** ele sempre gravará e retornará a data/hora na timezone **UTC**, e eu estou testando se a diferença entre a data gravada e a data antes de postar a mensagem é menor que 5 segundos (pode haver algum delay), só para garantir que a data correta foi gravada. Eu usei um "truque" simples para obter a data e convertê-la para o **timezone** padrão.
 
-Neste ponto, o seu teste já está super afinado, mas faltou validar algumas coisas, que, infelizmente, estão na classe **DatabaseWrapper**. Então, vamos criar um teste para a unidade **getUser** desta classe.
+Este é só um dos tipos de problema que você só pega quando faz testes de integração.
 
-Estas situações precisam ser testadas: 
+Agora é só rodar: ```mvn verify``` e pronto!
 
-1) Usuários suspensos não são retornados do **getUser**;
-2) Canais ocultos (HIDDEN=true) não são adicionados à coleção de canais do **User**;
-3) Se um usuário estiver suspenso em um canal (CHANNEL_SUSPENDED=true), o canal não será adicionado à sua coleção de canais;
+```
+[INFO] -------------------------------------------------------
+[INFO]  T E S T S
+[INFO] -------------------------------------------------------
+[INFO] Running com.pythondrops.testing.DatabaseWrapperTest
+Testing user is suspended on a channel
+Testing a suspende user
+Testing a hidden channel
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.678 s -- in com.pythondrops.testing.DatabaseWrapperTest
+[INFO] Running com.pythondrops.testing.DemoCodeTest
+Testing title zero length argument
+Testing all zero length arguments
+MESSAGE: Invalid UUID string: 
+Testing content null argument
+Testing content zero length argument
+Testing all null arguments
+Testing non existent user
+Testing channelId null argument
+Testing title null argument
+Testing a complete post message
+Testing userId null argument
+Testing user not in channel
+[INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.018 s -- in com.pythondrops.testing.DemoCodeTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] 
+[INFO] --- maven-jar-plugin:2.4:jar (default-jar) @ TesteProject ---
+[INFO] 
+[INFO] --- maven-failsafe-plugin:3.1.2:integration-test (default) @ TesteProject ---
+[INFO] Using auto detected provider org.apache.maven.surefire.junitplatform.JUnitPlatformProvider
+[INFO] 
+[INFO] -------------------------------------------------------
+[INFO]  T E S T S
+[INFO] -------------------------------------------------------
+[INFO] Running com.pythondrops.testing.BaseIT
+IT post a message with no errors
+2023-09-11 18:52:45
+Mon Sep 11 15:52:45 BRT 2023
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 8.968 s -- in com.pythondrops.testing.BaseIT
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] 
+[INFO] --- maven-failsafe-plugin:3.1.2:verify (default) @ TesteProject ---
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  11.385 s
+[INFO] Finished at: 2023-09-11T15:52:45-03:00
+[INFO] ------------------------------------------------------------------------
 
-Um **dev** apressado diria: "**Ué? Por que não 'refatoramos' e mudamos essas responsabilidades para o método postMessageToChannel?**" A resposta é simples: Isso não foi pedido! 
+Process finished with exit code 0
 
-Você não pode e não deve sair refatorando coisas por aí, especialmente se os testes não estiverem prontos. Mantenha o foco na tarefa dada, que foi: Criar testes unitários!
+```
 
-Então eu criei o arquivo [**DatabaseWrapperTest**](./src/test/java/com/pythondrops/testing/DatabaseWrapperTest.java) para testar essas 3 coisas. Para começar, vamos executar o teste: 
+Os testes unitários e de integração passaram sem problemas.
 
-![](./teste2.png)
-
-- **testSuspendedUser**: Emula o banco de dados e retorna "SUSPENDED=true" na query.
-- **testingAhiddenChannel**: Emula o banco de dados e marca o canal como "HIDDEN=true".
-- **testingUserIsSuspendedOnAchannel**: Emula o banco de dados e marca o usuário como suspenso no canal desejado.
-
-Com estes 3 testes extras, da unidade **DatabaseWrapper.getUser** eu completei todos os testes necessários para avaliar a situação de postar uma mensagem em um canal.
-
-
+**Mas quais outros testes eu preciso fazer?**
+Neste exemplo, só criei um único teste, mas você pode testar o caso do usuário não estar no canal ou mesmo do canal não existir, embora já tenhamos testado tudo isso nos testes unitários. Eu sugeriria que você testasse coisas mais críticas, como o **mysql** fora do ar, ou chaves duplicadas (o que não é o caso aqui).
